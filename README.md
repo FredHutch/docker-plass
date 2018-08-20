@@ -1,6 +1,7 @@
 # docker-plass
 Docker image running the protein-level assembler Plass
 
+[![Docker Repository on Quay](https://quay.io/repository/fhcrc-microbiome/plass/status "Docker Repository on Quay")](https://quay.io/repository/fhcrc-microbiome/plass)
 
 ```
 
