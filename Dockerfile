@@ -1,5 +1,8 @@
-FROM alpine:3.8 AS plass-builder
-RUN apk add --no-cache gcc g++ cmake musl-dev vim git ninja zlib-dev bzip2-dev gawk bash grep libstdc++ libgomp zlib libbz2
+FROM alpine:3.8
+RUN apk add --no-cache gcc g++ cmake musl-dev vim git ninja zlib-dev bzip2-dev \
+                       gawk bash grep libstdc++ libgomp zlib libbz2 bats \
+                       python3 curl && \
+    pip3 install awscli
 
 RUN mkdir /opt && \
     cd /opt && \
@@ -31,13 +34,6 @@ RUN cp /opt/plass/build_sse/src/plass /usr/local/bin/plass_sse42 && \
     fi'\
     >> /usr/local/bin/plass
 RUN chmod +x /usr/local/bin/plass
-
-# Install the SRA toolkit
-RUN cd /usr/local/bin && \
-    wget https://ftp-trace.ncbi.nlm.nih.gov/sra/sdk/2.8.2/sratoolkit.2.8.2-ubuntu64.tar.gz && \
-    tar xzvf sratoolkit.2.8.2-ubuntu64.tar.gz && \
-    ln -s /usr/local/bin/sratoolkit.2.8.2-ubuntu64/bin/* /usr/local/bin/ && \
-    rm sratoolkit.2.8.2-ubuntu64.tar.gz
 
 # Add the run script
 ADD run.py /usr/local/bin/

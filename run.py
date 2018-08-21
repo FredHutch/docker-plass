@@ -1,113 +1,16 @@
-#!/usr/bin/env python
+#!/usr/bin/env python3
 """Wrapper script for Plass, handles transfer of inputs and outputs to and from AWS S3."""
 
 import os
 import sys
 import uuid
+import gzip
 import json
 import shutil
 import logging
 import argparse
 import traceback
 import subprocess
-
-
-def get_sra(accession_string, temp_folder):
-    """Get the FASTQ for an SRA accession."""
-    logging.info("Downloading {} from SRA".format(accession_string))
-
-    local_path = os.path.join(temp_folder, "reads.fastq")
-    logging.info("Local path: {}".format(local_path))
-
-    # Download via fastq-dump
-    for accession in accession_string.split(","):
-        logging.info("Downloading {} via fastq-dump".format(accession))
-
-        accession_joined_fp = os.path.join(
-            temp_folder, accession + ".all.fastq")
-
-        run_cmds([
-            "prefetch", accession
-        ])
-        # Output the _1.fastq and _2.fastq files
-        run_cmds([
-            "fastq-dump", "--split-files",
-            "--defline-seq", "@$ac.$si.$sg/$ri",
-            "--defline-qual", "+",
-            "--outdir", temp_folder, accession
-        ])
-        r1 = os.path.join(temp_folder, accession + "_1.fastq")
-        r2 = os.path.join(temp_folder, accession + "_2.fastq")
-        assert os.path.exists(r1)
-
-        # If there are two reads created, interleave them
-        if os.path.exists(r2):
-            r1_paired = os.path.join(
-                temp_folder, accession + "_1.fastq.paired.fq")
-            r2_paired = os.path.join(
-                temp_folder, accession + "_2.fastq.paired.fq")
-
-            # Isolate the properly paired filed
-            run_cmds([
-                "fastq_pair", r1, r2
-            ])
-            assert os.path.exists(r1_paired)
-            assert os.path.exists(r2_paired)
-            logging.info("Removing raw downloaded FASTQ files")
-            os.remove(r1)
-            os.remove(r2)
-
-            # Interleave the two paired files
-            logging.info("Interleaving the paired FASTQ files")
-            interleave_fastq(r1_paired, r2_paired, accession_joined_fp)
-            assert os.path.exists(accession_joined_fp)
-            logging.info("Removing split and filtered FASTQ files")
-            os.remove(r1_paired)
-            os.remove(r2_paired)
-        else:
-            # Otherwise, just make the _1.fastq file the output
-            logging.info("Using {} as the output file".format(r1))
-            run_cmds(["mv", r1, accession_joined_fp])
-
-        # Remove the cache file, if any
-        logging.info("Removing cached SRA files")
-        run_cmds(["find", temp_folder, "-name", "*.sra", "-delete"])
-
-        # Append this set of reads to the total
-        logging.info("Adding reads from {} to the total".format(accession))
-        with open(local_path, "at") as fo:
-            for line in open(accession_joined_fp, "rt"):
-                fo.write(line)
-        logging.info("Removing temporary file " + accession_joined_fp)
-        os.remove(accession_joined_fp)
-
-    # Compress the FASTQ file
-    logging.info("Compress the FASTQ file")
-    run_cmds(["pigz", local_path])
-    local_path = local_path + ".gz"
-
-    # Return the path to the file
-    logging.info("Done fetching " + accession_string)
-    return local_path
-
-
-def interleave_fastq(fwd_fp, rev_fp, comb_fp):
-    fwd = open(fwd_fp, "rt")
-    rev = open(rev_fp, "rt")
-    nreads = 0
-    with open(comb_fp, "wt") as fo:
-        while True:
-            fwd_read = [fwd.readline() for ix in range(4)]
-            rev_read = [rev.readline() for ix in range(4)]
-            if any([l == '' for l in fwd_read]):
-                break
-            assert any([l == '' for l in rev_read]) is False
-            nreads += 1
-            fo.write(''.join(fwd_read))
-            fo.write(''.join(rev_read))
-    fwd.close()
-    rev.close()
-    logging.info("Interleaved {:,} pairs of reads".format(nreads))
 
 
 def get_reads_from_url(input_str, temp_folder):
@@ -117,11 +20,11 @@ def get_reads_from_url(input_str, temp_folder):
     filename = input_str.split('/')[-1]
     local_path = os.path.join(temp_folder, filename)
 
-    if not input_str.startswith(('s3://', 'sra://', 'ftp://', 'https://', 'http://')):
+    if not input_str.startswith(('s3://', 'ftp://', 'https://', 'http://')):
         logging.info("Treating as local path")
         assert os.path.exists(input_str)
-        logging.info("Making symbolic link in temporary folder")
-        os.symlink(input_str, local_path)
+        logging.info("Making copy in temporary folder")
+        shutil.copyfile(input_str, local_path)
         return local_path
 
     # Make sure the temp folder ends with '/'
@@ -152,14 +55,6 @@ def get_reads_from_url(input_str, temp_folder):
         run_cmds(['wget', '-P', temp_folder, input_str])
         return local_path
 
-    # Get files from SRA
-    elif input_str.startswith('sra://'):
-        accession = filename
-        logging.info("Getting reads from SRA: " + accession)
-        local_path = get_sra(accession, temp_folder)
-
-        return local_path
-
     else:
         msg = "Did not recognize prefix to fetch reads: " + input_str
         raise Exception(msg)
@@ -176,7 +71,7 @@ def run_cmds(commands, retry=0, catchExcept=False):
     exitcode = p.wait()
     if stdout:
         logging.info("Standard output of subprocess:")
-        for line in stdout.split('\n'):
+        for line in stdout.decode("utf-8").split('\n'):
             logging.info(line)
     if stderr:
         logging.info("Standard error of subprocess:")
@@ -230,17 +125,35 @@ def exit_and_clean_up(temp_folder):
     sys.exit(exc_value)
 
 
-def set_up_sra_cache_folder(temp_folder):
-    """Set up the fastq-dump cache folder within the temp folder."""
-    logging.info("Setting up fastq-dump cache within {}".format(temp_folder))
+def deinterleave(input_fp):
+    fwd_handle = open(input_fp + "_fwd.fastq", "wt")
+    rev_handle = open(input_fp + "_rev.fastq", "wt")
 
-    cache_folder = os.path.join(temp_folder, "sra_cache")
-    os.mkdir(cache_folder)
+    if input_fp.endswith("gz"):
+        interleaved_handle = gzip.open(input_fp, "rt")
+    else:
+        interleaved_handle = open(input_fp, "rt")
 
-    run_cmds([
-        "vdb-config", "--root", "-s", "/repository/user/main/public/root={}".format(
-            cache_folder)
-    ], catchExcept=True)
+    read_ix = 0
+    buffer = []
+    for line in interleaved_handle:
+        buffer.append(line)
+
+        if len(buffer) == 4:
+            assert buffer[0][0] == '@'
+            assert buffer[2][0] == '+'
+            if read_ix % 2 == 0:
+                fwd_handle.write("".join(buffer))
+            else:
+                rev_handle.write("".join(buffer))
+            read_ix += 1
+            buffer = []
+
+    interleaved_handle.close()
+    fwd_handle.close()
+    rev_handle.close()
+
+    return input_fp + "_fwd.fastq", input_fp + "_rev.fastq"
 
 
 if __name__ == "__main__":
@@ -251,8 +164,8 @@ if __name__ == "__main__":
     parser.add_argument("--input",
                         type=str,
                         required=True,
-                        help="""Location for input file(s). Comma-separated.
-                                (Supported: sra://, s3://, or ftp://).""")
+                        help="""Location for input file.
+                                (Supported: sra:// or ftp://).""")
     parser.add_argument("--output-fastp",
                         type=str,
                         required=True,
@@ -266,11 +179,19 @@ if __name__ == "__main__":
     parser.add_argument("--assembly-type",
                         type=str,
                         default="unpaired",
-                        help="""'paired' or 'unpaired'""")
+                        help="""'paired' or 'unpaired'. If 'paired', assume an interleaved FASTQ input""")
+    parser.add_argument("--genetic-code",
+                        type=int,
+                        default=11,
+                        help="""Genetic code to use for translation""")
     parser.add_argument("--temp-folder",
                         type=str,
                         default='/scratch',
                         help="Folder used for temporary files.")
+    parser.add_argument("--threads",
+                        type=int,
+                        default=1,
+                        help="Number of threads to use.")
 
     args = parser.parse_args()
 
@@ -290,15 +211,15 @@ if __name__ == "__main__":
     consoleHandler.setFormatter(logFormatter)
     rootLogger.addHandler(consoleHandler)
 
+    assert args.genetic_code in [
+        1, 2, 3, 4, 5, 6, 9, 10, 11, 12, 13, 14, 15, 16, 
+        21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31
+    ]
+
     # Set up a temporary folder
     temp_folder = os.path.join(args.temp_folder, str(uuid.uuid4()))
     assert os.path.exists(temp_folder) is False
     os.mkdir(temp_folder)
-
-    try:
-        set_up_sra_cache_folder(temp_folder)
-    except:
-        exit_and_clean_up(temp_folder)
 
     # Get the input file
     try:
@@ -306,12 +227,60 @@ if __name__ == "__main__":
     except:
         exit_and_clean_up(temp_folder)
 
-    # Run Plass
+    # Output file for assembly
     assembly_fp = os.path.join(temp_folder, "output.fastp")
+
+    # If the assembly should be paired, deinterleave the input file
+    if args.assembly_type == "paired":
+        logging.info("Deinterleaving " + input_file)
+        fwd, rev = deinterleave(input_file)
+
+        # Run Plass in paired-end mode
+        try:
+            run_cmds([
+                "plass", 
+                "assemble", 
+                "--use-all-table-starts",
+                "--translation-table",
+                str(args.genetic_code),
+                "--threads", 
+                str(args.threads), 
+                "-k", 
+                "0", 
+                "--filter-proteins", 
+                "0", 
+                fwd,
+                rev, 
+                assembly_fp, 
+                temp_folder + "/"
+            ])
+        except:
+            exit_and_clean_up(temp_folder)
+
+    else:
+        # Run Plass in single-end mode
+        try:
+            run_cmds([
+                "plass",
+                "assemble",
+                "--use-all-table-starts",
+                "--translation-table",
+                str(args.genetic_code),
+                "--threads",
+                str(args.threads),
+                "-k",
+                "0",
+                "--filter-proteins",
+                "0",
+                input_file,
+                assembly_fp,
+                temp_folder + "/"
+            ])
+        except:
+            exit_and_clean_up(temp_folder)
+
     try:
-        run_cmds([
-            "plass", "assemble", input_file, assembly_fp, temp_folder
-        ])
+        assert os.path.exists(assembly_fp)
     except:
         exit_and_clean_up(temp_folder)
 
