@@ -1,17 +1,36 @@
-FROM ubuntu:16.04
-MAINTAINER sminot@fredhutch.org
+FROM alpine:3.8 AS plass-builder
+RUN apk add --no-cache gcc g++ cmake musl-dev vim git ninja zlib-dev bzip2-dev gawk bash grep libstdc++ libgomp zlib libbz2
 
-# Install prerequisites
-RUN apt update && \
-    apt-get install -y build-essential wget unzip python2.7 python-dev git python-pip bats awscli curl g++ cmake zlib1g-dev libbz2-dev pigz && \
-    pip install awscli==1.15.54
+RUN mkdir /opt && \
+    cd /opt && \
+    git clone https://github.com/soedinglab/plass.git && \
+    cd plass && \
+    git checkout d4071700cba48fd6551173329f3b71629cbf829e && \
+    git submodule update --init
 
-# Install Plass
-RUN cd /usr/local && \
-    wget https://mmseqs.com/plass/plass-static_sse41.tar.gz && \
-    tar xvzf plass-static_sse41.tar.gz && \
-    export PATH=$(pwd)/plass/bin/:$PATH && \
-    rm plass-static_sse41.tar.gz
+RUN cd /opt/plass && \
+    ls -lhtr && \
+    mkdir build_sse && \
+    cd build_sse && \
+    cmake -G Ninja -DHAVE_SSE4_1=1 -DCMAKE_BUILD_TYPE=Release /opt/plass && \
+    ninja && ninja install
+
+RUN cd /opt/plass && \
+    mkdir build_avx && \
+    cd build_avx && \
+    cmake -G Ninja -DHAVE_AVX2=1 -DCMAKE_BUILD_TYPE=Release .. && \
+    ninja && ninja install
+
+RUN cp /opt/plass/build_sse/src/plass /usr/local/bin/plass_sse42 && \
+    cp /opt/plass/build_avx/src/plass /usr/local/bin/plass_avx2 && \
+    echo -e '#!/bin/bash\n\
+    if $(grep -q -E "^flags.+avx2" /proc/cpuinfo); then\n\
+    exec /usr/local/bin/plass_avx2 "$@"\n\
+    else\n\
+    exec /usr/local/bin/plass_sse42 "$@"\n\
+    fi'\
+    >> /usr/local/bin/plass
+RUN chmod +x /usr/local/bin/plass
 
 # Install the SRA toolkit
 RUN cd /usr/local/bin && \
@@ -19,23 +38,6 @@ RUN cd /usr/local/bin && \
     tar xzvf sratoolkit.2.8.2-ubuntu64.tar.gz && \
     ln -s /usr/local/bin/sratoolkit.2.8.2-ubuntu64/bin/* /usr/local/bin/ && \
     rm sratoolkit.2.8.2-ubuntu64.tar.gz
-
-# Install CMake3.11
-RUN cd /usr/local/bin && \
-    wget https://cmake.org/files/v3.11/cmake-3.11.0-Linux-x86_64.tar.gz && \
-    tar xzvf cmake-3.11.0-Linux-x86_64.tar.gz && \
-    ln -s $PWD/cmake-3.11.0-Linux-x86_64/bin/cmake /usr/local/bin/
-
-# Install fastq-pair
-RUN cd /usr/local && \
-    git clone https://github.com/linsalrob/fastq-pair.git && \
-    cd fastq-pair && \
-    git checkout 4ae91b0d9074410753d376e5adfb2ddd090f7d85 && \
-    mkdir build && \
-    cd build && \
-    cmake ../ && \
-    make && \
-    make install
 
 # Add the run script
 ADD run.py /usr/local/bin/
