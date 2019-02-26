@@ -14,4 +14,4 @@ RUN cd /usr/local && \
     mkdir build && cd build && \
     cmake -DCMAKE_BUILD_TYPE=RELEASE -DCMAKE_INSTALL_PREFIX=. .. && \
     make -j 4 && make install && \
-    export PATH="$(pwd)/bin/:$PATH"
+    export PATH="$(pwd)/build/bin/:$PATH"
