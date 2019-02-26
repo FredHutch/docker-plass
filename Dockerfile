@@ -1,28 +1,17 @@
-FROM alpine:3.8 AS plass-builder
-RUN apk add --no-cache gcc g++ cmake musl-dev vim git ninja zlib-dev bzip2-dev
+FROM ubuntu:16.04
 
-WORKDIR /opt/plass
-ADD . .
+# Install prerequisites
+RUN apt update && \
+    apt-get install -y build-essential wget unzip python2.7 \
+    python-dev git python-pip bats awscli curl ncbi-blast+ \
+    lbzip2 pigz autoconf autogen libssl-dev cmake
 
-WORKDIR build_sse
-RUN cmake -G Ninja -DHAVE_SSE4_1=1 -DCMAKE_BUILD_TYPE=Release ..
-RUN ninja && ninja install
-
-WORKDIR ../build_avx
-RUN cmake -G Ninja -DHAVE_AVX2=1 -DCMAKE_BUILD_TYPE=Release ..
-RUN ninja && ninja install
-
-FROM alpine:3.8
-MAINTAINER Milot Mirdita <milot@mirdita.de>
-RUN apk add --no-cache gawk bash grep libstdc++ libgomp zlib libbz2
-
-COPY --from=plass-builder /opt/plass/build_sse/src/plass /usr/local/bin/plass_sse42
-COPY --from=plass-builder /opt/plass/build_avx/src/plass /usr/local/bin/plass_avx2
-RUN echo -e '#!/bin/bash\n\
-    if $(grep -q -E "^flags.+avx2" /proc/cpuinfo); then\n\
-    exec /usr/local/bin/plass_avx2 "$@"\n\
-    else\n\
-    exec /usr/local/bin/plass_sse42 "$@"\n\
-    fi'\
-    >> /usr/local/bin/plass
-RUN chmod +x /usr/local/bin/plass
+RUN cd /usr/local && \
+    git clone https://github.com/soedinglab/plass.git && \
+    cd plass && \
+    git checkout 005a5c53a8c2c8da3aa1b716f886d15dbb5caf72 && \
+    git submodule update --init && \
+    mkdir build && cd build && \
+    cmake -DCMAKE_BUILD_TYPE=RELEASE -DCMAKE_INSTALL_PREFIX=. .. && \
+    make -j 4 && make install && \
+    export PATH="$(pwd)/bin/:$PATH"
