@@ -13,5 +13,6 @@ RUN cd /usr/local && \
     git submodule update --init && \
     mkdir build && cd build && \
     cmake -DCMAKE_BUILD_TYPE=RELEASE -DCMAKE_INSTALL_PREFIX=. .. && \
-    make -j 4 && make install && \
-    export PATH="$(pwd)/build/bin/:$PATH"
+    make -j 4 && \
+    make install && \
+    ln -s "$(pwd)/build/bin/plass" /usr/local/bin/
