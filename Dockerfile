@@ -9,7 +9,7 @@ RUN apt update && \
 RUN cd /usr/local && \
     git clone https://github.com/soedinglab/plass.git && \
     cd plass && \
-    git checkout 005a5c53a8c2c8da3aa1b716f886d15dbb5caf72 && \
+    git checkout 53a2eff54d26d24ec3c9486020ebf15add15af9f && \
     git submodule update --init && \
     mkdir build && cd build && \
     cmake -DCMAKE_BUILD_TYPE=RELEASE -DCMAKE_INSTALL_PREFIX=. .. && \
